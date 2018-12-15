@@ -21,7 +21,7 @@ fn send_msg(file: &mut std::fs::File, msg: WorkerMessage) {
     let msg_ref: &[u8] = msg.as_ref();
 
     let mut buf = BytesMut::with_capacity(msg_ref.len() + 2);
-    buf.put_u16::<BigEndian>(msg_ref.len() as u16);
+    buf.put_u16_be(msg_ref.len() as u16);
     buf.put(msg_ref);
     if let Err(err) = file.write_all(buf.as_ref()) {
         error!("Failed to notify master: {}", err);
@@ -41,7 +41,7 @@ pub fn exec_worker(idx: usize, cfg: &ServiceConfig, read: RawFd, write: RawFd) {
         error!("Failed to read master response: {}", err);
         std::process::exit(WORKER_INIT_FAILED as i32);
     }
-    let size = buffer.into_buf().get_u16::<BigEndian>();
+    let size = buffer.into_buf().get_u16_be();
     let mut buffer = Vec::with_capacity(size as usize);
     unsafe {buffer.set_len(size as usize)};
     if let Err(err) = file.read_exact(&mut buffer) {
