@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use nix::sys::wait::{waitpid, WaitStatus, WNOHANG};
+use nix::sys::wait::{waitpid, WaitStatus, WaitPidFlag};
 use nix::unistd::getpid;
 
 use actix::actors::signal;
@@ -38,7 +38,7 @@ pub struct CommandCenter {
     cfg: Rc<Config>,
     state: State,
     services: HashMap<String, Addr<FeService>>,
-    stop_waiter: Option<actix::Condition<bool>>,
+    stop_waiter: Option<actix::utils::Condition<bool>>,
     stopping: usize,
 }
 
@@ -124,7 +124,7 @@ impl Handler<Stop> for CommandCenter {
         self.stop(ctx, true);
 
         if self.stop_waiter.is_none() {
-            self.stop_waiter = Some(actix::Condition::default());
+            self.stop_waiter = Some(actix::utils::Condition::default());
         }
 
         if let Some(ref mut waiter) = self.stop_waiter {
@@ -391,10 +391,10 @@ impl Handler<signal::Signal> for CommandCenter {
                 info!("SIGCHLD received");
                 debug!("Reap workers");
                 loop {
-                    match waitpid(None, Some(WNOHANG)) {
+                    match waitpid(None, Some(WaitPidFlag::WNOHANG)) {
                         Ok(WaitStatus::Exited(pid, code)) => {
                             info!("Worker {} exit code: {}", pid, code);
-                            let err = ProcessError::from(code);
+                            let err = ProcessError::from(code as i8);
                             for srv in self.services.values_mut() {
                                 srv.do_send(service::ProcessExited(pid, err.clone()));
                             }

@@ -6,7 +6,7 @@ use std::os::unix::io::AsRawFd;
 
 use net2::unix::UnixTcpBuilderExt;
 use net2::TcpBuilder;
-use nix::fcntl::{fcntl, FcntlArg, FdFlag, FD_CLOEXEC};
+use nix::fcntl::{fcntl, FcntlArg, FdFlag};
 use serde_json as json;
 
 use addrinfo;
@@ -47,7 +47,7 @@ impl Socket {
 
         let mut flags =
             FdFlag::from_bits_truncate(fcntl(fd, FcntlArg::F_GETFD).unwrap());
-        flags.remove(FD_CLOEXEC);
+        flags.remove(FdFlag::FD_CLOEXEC);
         let _ = fcntl(fd, FcntlArg::F_SETFD(flags));
 
         Socket {

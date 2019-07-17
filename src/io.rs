@@ -6,7 +6,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use futures::{Async, Poll};
 use mio;
 use mio::unix::EventedFd;
-use nix::fcntl::{fcntl, FcntlArg, OFlag, O_NONBLOCK};
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use tokio::io::AsyncRead;
 use tokio::prelude::*;
 use tokio::reactor::PollEvented2;
@@ -83,7 +83,7 @@ impl FromRawFd for Io {
         let flags = fcntl(fd, FcntlArg::F_GETFL).unwrap();
         let _ = fcntl(
             fd,
-            FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | O_NONBLOCK),
+            FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK),
         );
 
         Io {
