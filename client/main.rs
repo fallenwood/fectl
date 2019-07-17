@@ -7,7 +7,6 @@ extern crate serde_json;
 extern crate serde_derive;
 
 extern crate structopt;
-#[macro_use]
 extern crate structopt_derive;
 
 extern crate byteorder;

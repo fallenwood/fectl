@@ -4,7 +4,6 @@ extern crate time;
 extern crate log;
 
 extern crate structopt;
-#[macro_use]
 extern crate structopt_derive;
 
 extern crate serde;
@@ -22,7 +21,6 @@ extern crate nix;
 extern crate tokio;
 extern crate toml;
 
-#[macro_use]
 extern crate actix;
 
 mod addrinfo;
