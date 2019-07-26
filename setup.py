@@ -81,7 +81,7 @@ setup_args = dict(
     author_email='fafhrd91@gmail.com',
     url='https://github.com/fafhrd91/fectl/',
     license='Apache 2',
-    packages=['fectl'],
+    packages=['fectl', 'fectl/apps', 'fectl/workers'],
     rust_extensions=[
         RustExtension({'fectl': 'fectl.fectl',
                        'fectld': 'fectl.fectld'}, 'Cargo.toml',
