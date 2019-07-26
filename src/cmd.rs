@@ -1,18 +1,18 @@
-use std::rc::Rc;
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use nix::sys::wait::{waitpid, WaitStatus, WaitPidFlag};
 use nix::unistd::getpid;
-use nix::sys::wait::{waitpid, WaitStatus, WNOHANG};
 
-use actix::Response;
-use actix::prelude::*;
 use actix::actors::signal;
+use actix::prelude::*;
+use actix::Response;
 use futures::Future;
 
 use config::Config;
 use event::{Reason, ServiceStatus};
 use process::ProcessError;
-use service::{self, FeService, StartStatus, ReloadStatus, ServiceOperationError};
+use service::{self, FeService, ReloadStatus, ServiceOperationError, StartStatus};
 
 #[derive(Debug)]
 /// Command center errors
@@ -27,7 +27,6 @@ pub enum CommandError {
     Service(ServiceOperationError),
 }
 
-
 #[derive(PartialEq, Debug)]
 enum State {
     Starting,
@@ -38,63 +37,55 @@ enum State {
 pub struct CommandCenter {
     cfg: Rc<Config>,
     state: State,
-    system: Addr<Syn, System>,
-    services: HashMap<String, Addr<Unsync, FeService>>,
-    stop_waiter: Option<actix::Condition<bool>>,
+    services: HashMap<String, Addr<FeService>>,
+    stop_waiter: Option<actix::utils::Condition<bool>>,
     stopping: usize,
 }
 
 impl CommandCenter {
-
-    pub fn start(cfg: Rc<Config>) -> Addr<Unsync, CommandCenter> {
+    pub fn start(cfg: Rc<Config>) -> Addr<CommandCenter> {
         CommandCenter {
             cfg,
             state: State::Starting,
-            system: Arbiter::system(),
             services: HashMap::new(),
             stop_waiter: None,
             stopping: 0,
         }.start()
     }
 
-    fn exit(&mut self, success: bool) {
+    fn exit(&mut self) {
         if let Some(waiter) = self.stop_waiter.take() {
             waiter.set(true);
         }
 
-        if success {
-            self.system.do_send(actix::msgs::SystemExit(0));
-        } else {
-            self.system.do_send(actix::msgs::SystemExit(1));
-        }
+        System::current().stop();
     }
 
-    fn stop(&mut self, ctx: &mut Context<Self>, graceful: bool)
-    {
+    fn stop(&mut self, ctx: &mut Context<Self>, graceful: bool) {
         if self.state != State::Stopping {
             info!("Stopping service");
 
             self.state = State::Stopping;
             for service in self.services.values() {
                 self.stopping += 1;
-                service.send(service::Stop(graceful, Reason::Exit))
+                service
+                    .send(service::Stop(graceful, Reason::Exit))
                     .into_actor(self)
                     .then(|res, srv, _| {
                         srv.stopping -= 1;
                         let exit = srv.stopping == 0;
                         if exit {
-                            srv.exit(true);
+                            srv.exit();
                         }
                         match res {
                             Ok(_) => actix::fut::ok(()),
                             Err(_) => actix::fut::err(()),
                         }
                     }).spawn(ctx);
-            };
+            }
         }
     }
 }
-
 
 pub struct ServicePids(pub String);
 
@@ -105,24 +96,25 @@ impl Message for ServicePids {
 impl Handler<ServicePids> for CommandCenter {
     type Result = Response<Vec<String>, CommandError>;
 
-    fn handle(&mut self, msg: ServicePids, _: &mut Context<CommandCenter>) -> Self::Result {
+    fn handle(
+        &mut self, msg: ServicePids, _: &mut Context<CommandCenter>,
+    ) -> Self::Result {
         match self.state {
-            State::Running => {
-                match self.services.get(&msg.0) {
-                    Some(service) =>
-                        Response::async(
-                            service.send(service::Pids).map_err(|_| CommandError::UnknownService)
-                        ),
-                    None => Response::reply(Err(CommandError::UnknownService))
-                }
-            }
-            _ => Response::reply(Err(CommandError::NotReady))
+            State::Running => match self.services.get(&msg.0) {
+                Some(service) => Response::async(
+                    service
+                        .send(service::Pids)
+                        .map_err(|_| CommandError::UnknownService),
+                ),
+                None => Response::reply(Err(CommandError::UnknownService)),
+            },
+            _ => Response::reply(Err(CommandError::NotReady)),
         }
     }
 }
 
 #[derive(Message)]
-#[rtype(result="Result<bool, ()>")]
+#[rtype(result = "Result<bool, ()>")]
 pub struct Stop;
 
 impl Handler<Stop> for CommandCenter {
@@ -132,7 +124,7 @@ impl Handler<Stop> for CommandCenter {
         self.stop(ctx, true);
 
         if self.stop_waiter.is_none() {
-            self.stop_waiter = Some(actix::Condition::default());
+            self.stop_waiter = Some(actix::utils::Condition::default());
         }
 
         if let Some(ref mut waiter) = self.stop_waiter {
@@ -142,7 +134,6 @@ impl Handler<Stop> for CommandCenter {
         }
     }
 }
-
 
 /// Start Service by `name`
 pub struct StartService(pub String);
@@ -154,20 +145,21 @@ impl Message for StartService {
 impl Handler<StartService> for CommandCenter {
     type Result = Response<StartStatus, CommandError>;
 
-    fn handle(&mut self, msg: StartService, _: &mut Context<CommandCenter>) -> Self::Result {
+    fn handle(
+        &mut self, msg: StartService, _: &mut Context<CommandCenter>,
+    ) -> Self::Result {
         match self.state {
             State::Running => {
                 info!("Starting service {:?}", msg.0);
                 match self.services.get(&msg.0) {
-                    Some(service) =>
-                        Response::async(
-                            service.send(service::Start).then(|res| match res {
-                                Ok(Ok(status)) => Ok(status),
-                                Ok(Err(err)) => Err(CommandError::Service(err)),
-                                Err(_) => Err(CommandError::NotReady)
-                            })),
-                    None =>
-                        Response::reply(Err(CommandError::UnknownService))
+                    Some(service) => Response::async(service.send(service::Start).then(
+                        |res| match res {
+                            Ok(Ok(status)) => Ok(status),
+                            Ok(Err(err)) => Err(CommandError::Service(err)),
+                            Err(_) => Err(CommandError::NotReady),
+                        },
+                    )),
+                    None => Response::reply(Err(CommandError::UnknownService)),
                 }
             }
             _ => {
@@ -188,20 +180,22 @@ impl Message for StopService {
 impl Handler<StopService> for CommandCenter {
     type Result = Response<(), CommandError>;
 
-    fn handle(&mut self, msg: StopService, _: &mut Context<CommandCenter>) -> Self::Result {
+    fn handle(
+        &mut self, msg: StopService, _: &mut Context<CommandCenter>,
+    ) -> Self::Result {
         match self.state {
             State::Running => {
                 info!("Stopping service {:?}", msg.0);
                 match self.services.get(&msg.0) {
-                    Some(service) =>
-                        Response::async(
-                            service.send(service::Stop(msg.1, Reason::ConsoleRequest))
-                                .then(|res| match res {
-                                    Ok(Ok(_)) => Ok(()),
-                                    _ => Err(CommandError::ServiceStopped),
-                                })),
-                    None =>
-                        Response::reply(Err(CommandError::UnknownService))
+                    Some(service) => Response::async(
+                        service
+                            .send(service::Stop(msg.1, Reason::ConsoleRequest))
+                            .then(|res| match res {
+                                Ok(Ok(_)) => Ok(()),
+                                _ => Err(CommandError::ServiceStopped),
+                            }),
+                    ),
+                    None => Response::reply(Err(CommandError::UnknownService)),
                 }
             }
             _ => {
@@ -222,21 +216,20 @@ impl Message for StatusService {
 impl Handler<StatusService> for CommandCenter {
     type Result = Response<ServiceStatus, CommandError>;
 
-    fn handle(&mut self, msg: StatusService, _: &mut Context<CommandCenter>) -> Self::Result {
+    fn handle(
+        &mut self, msg: StatusService, _: &mut Context<CommandCenter>,
+    ) -> Self::Result {
         match self.state {
-            State::Running => {
-                match self.services.get(&msg.0) {
-                    Some(service) =>
-                        Response::async(
-                            service.send(service::Status).then(|res| match res {
-                                Ok(Ok(status)) => Ok(status),
-                                _ => Err(CommandError::UnknownService)
-                            })),
-                    None =>
-                        Response::reply(Err(CommandError::UnknownService)),
-                }
-            }
-            _ => Response::reply(Err(CommandError::NotReady))
+            State::Running => match self.services.get(&msg.0) {
+                Some(service) => Response::async(service.send(service::Status).then(
+                    |res| match res {
+                        Ok(Ok(status)) => Ok(status),
+                        _ => Err(CommandError::UnknownService),
+                    },
+                )),
+                None => Response::reply(Err(CommandError::UnknownService)),
+            },
+            _ => Response::reply(Err(CommandError::NotReady)),
         }
     }
 }
@@ -251,19 +244,21 @@ impl Message for PauseService {
 impl Handler<PauseService> for CommandCenter {
     type Result = Response<(), CommandError>;
 
-    fn handle(&mut self, msg: PauseService, _: &mut Context<CommandCenter>) -> Self::Result {
+    fn handle(
+        &mut self, msg: PauseService, _: &mut Context<CommandCenter>,
+    ) -> Self::Result {
         match self.state {
             State::Running => {
                 info!("Pause service {:?}", msg.0);
                 match self.services.get(&msg.0) {
-                    Some(service) =>
-                        Response::async(
-                            service.send(service::Pause).then(|res| match res {
-                                Ok(Ok(_)) => Ok(()),
-                                Ok(Err(err)) => Err(CommandError::Service(err)),
-                                Err(_) => Err(CommandError::UnknownService)
-                            })),
-                    None => Response::reply(Err(CommandError::UnknownService))
+                    Some(service) => Response::async(service.send(service::Pause).then(
+                        |res| match res {
+                            Ok(Ok(_)) => Ok(()),
+                            Ok(Err(err)) => Err(CommandError::Service(err)),
+                            Err(_) => Err(CommandError::UnknownService),
+                        },
+                    )),
+                    None => Response::reply(Err(CommandError::UnknownService)),
                 }
             }
             _ => {
@@ -284,20 +279,23 @@ impl Message for ResumeService {
 impl Handler<ResumeService> for CommandCenter {
     type Result = Response<(), CommandError>;
 
-    fn handle(&mut self, msg: ResumeService, _: &mut Context<CommandCenter>) -> Self::Result {
+    fn handle(
+        &mut self, msg: ResumeService, _: &mut Context<CommandCenter>,
+    ) -> Self::Result {
         match self.state {
             State::Running => {
                 info!("Resume service {:?}", msg.0);
                 match self.services.get(&msg.0) {
-                    Some(service) =>
-                        Response::async(
-                            service.send(service::Resume).then(|res| match res {
+                    Some(service) => {
+                        Response::async(service.send(service::Resume).then(|res| {
+                            match res {
                                 Ok(Ok(_)) => Ok(()),
                                 Ok(Err(err)) => Err(CommandError::Service(err)),
-                                Err(_) => Err(CommandError::UnknownService)
-                            })),
-                    None =>
-                        Response::reply(Err(CommandError::UnknownService))
+                                Err(_) => Err(CommandError::UnknownService),
+                            }
+                        }))
+                    }
+                    None => Response::reply(Err(CommandError::UnknownService)),
                 }
             }
             _ => {
@@ -324,15 +322,16 @@ impl Handler<ReloadService> for CommandCenter {
                 info!("Reloading service {:?}", msg.0);
                 let graceful = msg.1;
                 match self.services.get(&msg.0) {
-                    Some(service) =>
-                        Response::async(
-                            service.send(service::Reload(graceful)).then(|res| match res {
+                    Some(service) => {
+                        Response::async(service.send(service::Reload(graceful)).then(
+                            |res| match res {
                                 Ok(Ok(status)) => Ok(status),
                                 Ok(Err(err)) => Err(CommandError::Service(err)),
-                                Err(_) => Err(CommandError::UnknownService)
-                            })),
-                    None =>
-                        Response::reply(Err(CommandError::UnknownService))
+                                Err(_) => Err(CommandError::UnknownService),
+                            },
+                        ))
+                    }
+                    None => Response::reply(Err(CommandError::UnknownService)),
                 }
             }
             _ => {
@@ -361,7 +360,7 @@ impl Handler<ReloadAll> for CommandCenter {
                     srv.do_send(service::Reload(true));
                 }
             }
-            _ => warn!("Can not reload in system in `{:?}` state", self.state)
+            _ => warn!("Can not reload in system in `{:?}` state", self.state),
         }
     }
 }
@@ -392,48 +391,44 @@ impl Handler<signal::Signal> for CommandCenter {
                 info!("SIGCHLD received");
                 debug!("Reap workers");
                 loop {
-                    match waitpid(None, Some(WNOHANG)) {
+                    match waitpid(None, Some(WaitPidFlag::WNOHANG)) {
                         Ok(WaitStatus::Exited(pid, code)) => {
                             info!("Worker {} exit code: {}", pid, code);
-                            let err = ProcessError::from(code);
+                            let err = ProcessError::from(code as i8);
                             for srv in self.services.values_mut() {
-                                srv.do_send(
-                                    service::ProcessExited(pid, err.clone())
-                                );
+                                srv.do_send(service::ProcessExited(pid, err.clone()));
                             }
-                            continue
+                            continue;
                         }
                         Ok(WaitStatus::Signaled(pid, sig, _)) => {
                             info!("Worker {} exit by signal {:?}", pid, sig);
                             let err = ProcessError::Signal(sig as usize);
                             for srv in self.services.values_mut() {
-                                srv.do_send(
-                                    service::ProcessExited(pid, err.clone())
-                                );
+                                srv.do_send(service::ProcessExited(pid, err.clone()));
                             }
-                            continue
-                        },
+                            continue;
+                        }
                         Ok(_) => (),
                         Err(_) => (),
                     }
-                    break
+                    break;
                 }
             }
         }
     }
 }
 
-
 impl Actor for CommandCenter {
     type Context = Context<Self>;
 
-    fn started(&mut self, ctx: &mut Context<Self>)
-    {
+    fn started(&mut self, ctx: &mut Context<Self>) {
         info!("Starting ctl service: {}", getpid());
 
         // listen for process signals
-        let addr: Addr<Syn, _> = ctx.address();
-        Arbiter::system_registry().get::<signal::ProcessSignals>()
+        let addr = ctx.address();
+        System::current()
+            .registry()
+            .get::<signal::ProcessSignals>()
             .do_send(signal::Subscribe(addr.recipient()));
 
         // start services
@@ -445,7 +440,7 @@ impl Actor for CommandCenter {
     }
 
     fn stopping(&mut self, _: &mut Context<Self>) -> Running {
-        self.exit(true);
+        self.exit();
         Running::Stop
     }
 }

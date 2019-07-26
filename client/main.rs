@@ -1,16 +1,18 @@
 extern crate env_logger;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 
 extern crate serde_json;
-#[macro_use] extern crate serde_derive;
+#[macro_use]
+extern crate serde_derive;
 
 extern crate structopt;
-#[macro_use] extern crate structopt_derive;
+extern crate structopt_derive;
 
-extern crate chrono;
 extern crate byteorder;
 extern crate bytes;
-extern crate tokio_io;
+extern crate chrono;
+extern crate tokio;
 
 mod client;
 mod config;
@@ -24,7 +26,6 @@ mod master_types {
     include!("../src/master_types.rs");
 }
 
-
 fn main() {
     let _ = env_logger::init();
 
@@ -32,5 +33,5 @@ fn main() {
         Some((cmd, sock)) => client::run(cmd, &sock),
         None => false,
     };
-    std::process::exit(if success {0} else {1});
+    std::process::exit(if success { 0 } else { 1 });
 }
