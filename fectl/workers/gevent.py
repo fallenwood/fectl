@@ -31,7 +31,7 @@ class GeventWorker(Worker):
             s = sock.socket
             if sys.version_info[0] == 3:
                 sock.socket = g_socket(
-                    s.family, s.type, fileno=s.sock.fileno())
+                    s.family, s.type, fileno=s.fileno())
             else:
                 sock.socket = g_socket(s.family, s.type, _sock=s)
 
